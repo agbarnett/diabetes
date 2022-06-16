@@ -1,0 +1,222 @@
+---
+title: "Verifying the diagnosis coding using randomly selected women. 2019 data."
+author: "Adrian Barnett"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: word_document
+---
+
+  
+```{r, include=FALSE}
+# called from 1_diagnosis.R
+
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+options(width=1000) # Wide pages
+options(scipen=999) # avoid scientific presentation
+library(dplyr)
+library(janitor)
+library(flextable)
+set_flextable_defaults(big.mark='') 
+n_sample = 5 # number to sample
+TeachingDemos::char2seed('barrow')
+
+# randomly sample mothers, just those with 1 pregnancy
+single_pregnancy = group_by(diagnosis_2019, mother_id) %>%
+  summarise(pregs = max(preg_seq_id  )) %>%
+  ungroup() %>%
+  filter(pregs == 1) %>%
+  select(mother_id)
+to_sample = left_join(single_pregnancy, diagnosis_2019, by='mother_id')
+# a) missing
+sample_NA = filter(to_sample, is.na(early_gdm) & is.na(gdm)) %>%
+  filter(facility_name =="Royal Brisbane and Women's") %>% # temporary
+  sample_n(n_sample) %>%
+  select(mother_id)
+# b) not missing and with positive diagnosis
+sample_positive = filter(to_sample, early_gdm == 'Yes' | gdm =='Yes') %>%
+  sample_n(n_sample) %>%
+  select(mother_id)
+# c) not missing and with negative diagnosis
+sample_negative = filter(to_sample, early_gdm == 'No' | gdm =='No') %>%
+  sample_n(n_sample) %>%
+  select(mother_id)
+```
+
+We take random samples of the data to examine how Adrian's diagnosis coding has worked. For simplicity we exclude women who had two pregnancies in the same year.
+
+# Missing data for GDM diagnosis
+
+First we look at missing GDM diagnosis (using my derivation) by facility. The cells show the missing numbers and within-facility percentage of missing. The rows are arranged by the percent missing.
+
+```{r}
+tab = mutate(diagnosis_2019, missing = is.na(gdm) & is.na(early_gdm),
+             missing = ifelse(missing==TRUE, 'Missing','Not missing')) %>%
+  group_by(facility_name, missing) %>%
+  tally() %>%
+  group_by(facility_name) %>%
+  mutate(percent = round(prop.table(n)*100)) %>%
+  filter(missing == 'Missing') %>%
+  arrange(desc(percent))
+ftab = flextable(tab) %>%
+  fontsize(part = 'all', size = 8) %>%
+  autofit() 
+ftab
+```
+
+<!--- Almost all the women in private hospitals have missing OGTT data. We could possibly exclude these women from the analysis? --->
+
+# Examples with missing GDM and early GDM diagnosis
+
+### Selected variable from mother data
+
+```{r}
+to_table = left_join(sample_NA, mother_data, by = c('mother_id')) %>%
+  select(mother_id, facility_name, est_confinment_date, body_mass_index, pregnancy_complicatns_flag, gdm_diagnosis) %>%
+  arrange(mother_id)
+tab = flextable(to_table) %>%
+  fontsize(part = 'all', size = 8) %>%
+  autofit()
+tab
+```
+
+### Glucose data
+
+```{r}
+to_table = left_join(sample_NA, mother_glu, by = c('mother_id')) %>%
+  select(-source) %>%
+  arrange(mother_id, collected)
+tab = flextable(to_table) %>%
+  fontsize(part = 'all', size = 9) %>%
+  merge_v(j=1) %>%
+  theme_box() %>%
+  autofit()
+tab
+```
+
+
+### a1c data
+
+```{r}
+to_table = left_join(sample_NA, mother_a1c, by = c('mother_id')) %>%
+  select(-source) %>%
+  arrange(mother_id, collected)
+tab = flextable(to_table) %>%
+  fontsize(part = 'all', size = 9) %>%
+  merge_v(j=1) %>%
+  theme_box() %>%
+  autofit()
+tab
+```
+
+
+# Examples with positive GDM or early GDM diagnosis
+
+### Selected variable from mother data
+
+```{r}
+to_table = left_join(sample_positive, mother_data, by = c('mother_id')) %>%
+  select(mother_id, facility_name, est_confinment_date, body_mass_index, pregnancy_complicatns_flag, gdm_diagnosis) %>%
+  arrange(mother_id)
+tab = flextable(to_table) %>%
+  fontsize(part = 'all', size = 8) %>%
+  autofit()
+tab
+```
+
+### Glucose data
+
+```{r}
+to_table = left_join(sample_positive, mother_glu, by = c('mother_id')) %>%
+  select(-source) %>%
+  arrange(mother_id, collected)
+tab = flextable(to_table) %>%
+  fontsize(part = 'all', size = 9) %>%
+  merge_v(j=1) %>%
+  theme_box() %>%
+  autofit()
+tab
+```
+
+### a1c data
+
+```{r}
+to_table = left_join(sample_positive, mother_a1c, by = c('mother_id')) %>%
+  select(-source) %>%
+  arrange(mother_id, collected)
+tab = flextable(to_table) %>%
+  fontsize(part = 'all', size = 9) %>%
+  merge_v(j=1) %>%
+  theme_box() %>%
+  autofit()
+tab
+```
+
+### Diagnosis data (derived by Adrian)
+
+```{r}
+to_table = left_join(sample_positive, diagnosis_2019, by = c('mother_id')) %>%
+  select(mother_id, ogtt, early_gdm, gdm) %>%
+  arrange(mother_id)
+tab = flextable(to_table) %>%
+  fontsize(part = 'all', size = 9) %>%
+  merge_v(j=1) %>%
+  theme_box() %>%
+  autofit()
+tab
+```
+
+# Examples with negative GDM or early GDM diagnosis
+
+### Selected variable from mother data
+
+```{r}
+to_table = left_join(sample_negative, mother_data, by = c('mother_id')) %>%
+  select(mother_id, facility_name, est_confinment_date, body_mass_index, pregnancy_complicatns_flag, gdm_diagnosis) %>%
+  arrange(mother_id)
+tab = flextable(to_table) %>%
+  fontsize(part = 'all', size = 8) %>%
+  autofit()
+tab
+```
+
+### Glucose data
+
+```{r}
+to_table = left_join(sample_negative, mother_glu, by = c('mother_id')) %>%
+  select(-source) %>%
+  arrange(mother_id, collected)
+tab = flextable(to_table) %>%
+  fontsize(part = 'all', size = 9) %>%
+  merge_v(j=1) %>%
+  theme_box() %>%
+  autofit()
+tab
+```
+
+### a1c data
+
+```{r}
+to_table = left_join(sample_negative, mother_a1c, by = c('mother_id')) %>%
+  select(-source) %>%
+  arrange(mother_id, collected)
+tab = flextable(to_table) %>%
+  fontsize(part = 'all', size = 9) %>%
+  merge_v(j=1) %>%
+  theme_box() %>%
+  autofit()
+tab
+```
+
+### Diagnosis data (derived by Adrian)
+
+```{r}
+to_table = left_join(sample_negative, diagnosis_2019, by = c('mother_id')) %>%
+  select(mother_id, ogtt, early_gdm, gdm) %>%
+  arrange(mother_id)
+tab = flextable(to_table) %>%
+  fontsize(part = 'all', size = 9) %>%
+  merge_v(j=1) %>%
+  theme_box() %>%
+  autofit()
+tab
+```
+

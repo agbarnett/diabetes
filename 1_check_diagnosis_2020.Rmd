@@ -1,0 +1,79 @@
+---
+title: "Verifying the diagnosis coding using randomly selected women. 2020 data."
+author: "Adrian Barnett"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: word_document
+---
+
+  
+```{r, include=FALSE}
+# called from 1_diagnosis_2020.R
+
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+options(width=1000) # Wide pages
+options(scipen=999) # avoid scientific presentation
+library(dplyr)
+library(janitor)
+library(flextable)
+set_flextable_defaults(big.mark='') 
+n_sample = 5 # number to sample per diagnosis
+TeachingDemos::char2seed('barrow')
+
+# randomly sample mothers, just those with 1 pregnancy
+single_pregnancy = group_by(diagnosis_2020, mother_id) %>%
+  summarise(pregs = max(preg_seq_id  )) %>%
+  ungroup() %>%
+  filter(pregs == 1) %>%
+  select(mother_id)
+sample = left_join(single_pregnancy, diagnosis_2020, by='mother_id') %>%
+  filter(gdm == this_diagnosis) %>% # from 1_diagnosis_2020.R
+  sample_n(size=5, replace=TRUE) %>% # 5 per diagnosis (use replace because of one small group)
+  unique() %>% # to remove multiple samples
+  arrange(mother_id) %>%
+  select(mother_id)
+```
+
+We take random samples of the data to examine how Adrian's diagnosis coding has worked. For simplicity we exclude women who had two pregnancies in the same year.
+
+This is for the diagnosis: **`r this_diagnosis`**.
+
+### Selected variable from mother data
+
+```{r}
+to_table = left_join(sample, mother_data, by = c('mother_id')) %>%
+  select(mother_id, facility_name, est_confinment_date, pregnancy_complicatns_flag, gdm_diagnosis) %>%
+  arrange(mother_id)
+tab = flextable(to_table) %>%
+  fontsize(part = 'all', size = 8) %>%
+  autofit()
+tab
+```
+
+### Glucose data
+
+```{r}
+to_table = left_join(sample, mother_glu, by = c('mother_id')) %>%
+  select(-source) %>%
+  arrange(mother_id, collected)
+tab = flextable(to_table) %>%
+  fontsize(part = 'all', size = 9) %>%
+  merge_v(j=1) %>%
+  theme_box() %>%
+  autofit()
+tab
+```
+
+### a1c data
+
+```{r}
+to_table = left_join(sample, mother_a1c, by = c('mother_id')) %>%
+  select(-source) %>%
+  arrange(mother_id, collected)
+tab = flextable(to_table) %>%
+  fontsize(part = 'all', size = 9) %>%
+  merge_v(j=1) %>%
+  theme_box() %>%
+  autofit()
+tab
+```
+

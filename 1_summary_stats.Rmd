@@ -1,0 +1,279 @@
+---
+title: "Are changes to Gestational Diabetes Mellitus screening and diagnosis during COVID-19 worth continuing?\nSummary statistics"
+author: "Adrian Barnett"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+---
+
+  
+```{r, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+options(width=1000) # Wide pages
+options(scipen=999) # avoid scientific presentation
+library(vtable)
+library(dplyr)
+library(tidyr)
+library(flextable)
+library(janitor)
+library(ggplot2)
+library(scales) # for date_format
+
+# load the data
+load('data/raw_data.RData')
+```
+
+Queensland Perinatal Data Collection (PDC):  Mother and baby records for births between (1 July 2019 and 31 December 2019) and (1 July 2020 and 31 December 2020). 
+
+# Baby data
+
+```{r}
+for_table = select(baby_data, -ends_with('_id'), -source)
+sumtable(for_table,
+         title  = '',
+         digits = 0)
+```
+
+### Baby data - histograms of continuous variables 
+
+```{r}
+for_plot = select_if(for_table, is.numeric) %>%
+  pivot_longer(cols=everything())
+gplot = ggplot(data=for_plot, aes(x=value))+
+  geom_histogram()+
+  facet_wrap(~name, scales='free')+
+  theme_bw()
+gplot
+```
+
+
+# Baby induction
+
+Method of inducing labour or augmenting labour after spontaneous onset
+
+```{r}
+assist = baby_lab_assist$induction_method
+tab = tabyl(assist) %>%
+  arrange(-n) %>%
+  mutate(percent = round(percent*100))
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+# Baby complication
+
+A medical or obstetric complication arising during labour as represented by a code.
+
+```{r}
+complication = baby_lab_deliv_compln$labour_deliv_complicatn_text
+tab = tabyl(complication) %>%
+  arrange(-n) %>%
+  mutate(percent = round(percent*100))
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+# Baby resuscitation
+
+Active measure taken immediately after birth to establish independent respiration and heart beat, or to treat depressed respiratory effort and to correct metabolic disturbances
+
+```{r}
+resuscitation = baby_resuscitation$resuscitation
+tab = tabyl(resuscitation) %>%
+  arrange(-n) %>%
+  mutate(percent = round(percent*100))
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+# Baby morbidity
+
+The description of a condition or disease of the baby present prior to discharge, transfer or death, as represented by a code.
+
+```{r}
+morbidity = baby_neonatal_morb$neonatal_morbidity_code_text
+tab = tabyl(morbidity) %>%
+  arrange(-n) %>%
+  mutate(percent = round(percent*100))
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+# Baby treatment
+
+The type of neonatal treatment given during the birth episode.
+
+```{r}
+treatment = baby_neonatal_treat$neonatal_treatment
+tab = tabyl(treatment) %>%
+  arrange(-n) %>%
+  mutate(percent = round(percent*100))
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+# Baby feeding
+
+Any feeding method other than breast feeding used prior to discharge.
+
+```{r}
+feeding = baby_alt_feed_method$alternative_feed_method
+tab = tabyl(feeding) %>%
+  arrange(-n) %>%
+  mutate(percent = round(percent*100))
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+# Mother data
+
+```{r}
+for_table = select(mother_data, -ends_with('_id'), -source)
+sumtable(for_table,
+         title  = '',
+         digits = 0)
+```
+
+### Mother data - histograms of continuous variables 
+
+```{r}
+for_plot = select_if(for_table, is.numeric) %>%
+  pivot_longer(cols=everything())
+gplot = ggplot(data=for_plot, aes(x=value))+
+  geom_histogram()+
+  facet_wrap(~name, scales='free')+
+  theme_bw()
+gplot
+```
+
+# Mother last birth methods
+
+```{r}
+for_table = select(mother_deliv_last_brth, -ends_with('_id'), -source)
+sumtable(for_table,
+         title  = '',
+         digits = 0)
+```
+
+# Mother pregnancy complications
+
+```{r}
+complication = mother_preg_complicatn$pregnancy_complication_text
+tab = tabyl(complication) %>%
+  arrange(-n) %>%
+  mutate(percent = round(percent*100))
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+# Mother existing medical conditions
+
+```{r}
+condition = mother_existing_medi_condtns$medical_condition_text
+tab = tabyl(condition) %>%
+  arrange(-n) %>%
+  mutate(percent = round(percent*100))
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+# Mother transfer reasons
+
+```{r}
+reason = mother_antnat_tfr$tfr_reason_text
+tab = tabyl(reason) %>%
+  arrange(-n) %>%
+  mutate(percent = round(percent*100))
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+# Mother A1C (AUSLAB data)
+
+```{r}
+for_table = select(mother_a1c, -ends_with('_id'), -source)
+sumtable(for_table,
+         title  = '',
+         digits = 0)
+```
+
+### Mother A1C - histograms of continuous variables 
+
+```{r}
+for_plot = select_if(for_table, is.numeric) %>%
+  pivot_longer(cols=everything())
+gplot = ggplot(data=for_plot, aes(x=value))+
+  geom_histogram()+
+  facet_wrap(~name, scales='free')+
+  theme_bw()
+gplot
+```
+
+
+### Dates collected for A1C
+
+```{r date_plot_a1c}
+breaks = seq(min(mother_a1c$collected)-5, max(mother_a1c$collected)+5, 30)
+dplot =  ggplot(mother_a1c, aes(x=collected)) + 
+  geom_histogram(binwidth=30, colour="white", fill='skyblue') +
+       scale_x_date(labels = date_format("%Y-%b"),
+                    breaks = breaks) +
+  ylab("Frequency") + 
+  xlab("Year and Month") +
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle=90), panel.grid.minor = element_blank())
+dplot
+```
+
+
+# Mother glucose
+
+```{r}
+for_table = select(mother_glu, -ends_with('_id'), -source)
+sumtable(for_table,
+         title  = '',
+         digits = 0)
+```
+
+### Mother glucose - histograms of continuous variables 
+
+```{r}
+for_plot = select_if(for_table, is.numeric) %>%
+  pivot_longer(cols=everything())
+gplot = ggplot(data=for_plot, aes(x=value))+
+  geom_histogram()+
+  facet_wrap(~name, scales='free')+
+  theme_bw()
+gplot
+```
+
+### Dates collected for glucose
+
+```{r}
+breaks = seq(min(mother_glu$collected)-5, max(mother_glu$collected)+5, 30)
+dplot =  ggplot(mother_glu, aes(x=collected)) + 
+  geom_histogram(binwidth=30, colour="white", fill='skyblue') +
+       scale_x_date(labels = date_format("%Y-%b"),
+                    breaks = breaks) +
+  ylab("Frequency") + 
+  xlab("Year and Month") +
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle=90), panel.grid.minor = element_blank())
+dplot
+```
