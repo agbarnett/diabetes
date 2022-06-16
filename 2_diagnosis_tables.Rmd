@@ -1,0 +1,51 @@
+---
+title: "Simple frequency tables of diagnosis"
+author: "Adrian Barnett"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: word_document
+---
+
+  
+```{r, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+options(width=1000) # Wide pages
+options(scipen=999) # avoid scientific presentation
+library(dplyr)
+library(janitor)
+library(flextable)
+set_flextable_defaults(big.mark='') 
+
+# get the data
+load('data/1_diagnosis_2019.RData')
+load('data/1_diagnosis_2020.RData')
+```
+
+# 2019
+
+```{r}
+tab = tabyl(diagnosis_2019, overall) %>%
+  arrange(-n) %>%
+  mutate(percent = round(percent*100),
+         valid_percent = round(valid_percent*100),
+         overall = ifelse(is.na(overall), 'Missing', overall))
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+# 2020
+
+```{r}
+tab = mutate(diagnosis_2020, 
+             gdm = ifelse(gdm=='Missing', NA, gdm)) %>% # so that valid percent works
+  tabyl(gdm) %>%
+  arrange(-n) %>%
+  mutate(percent = round(percent*100),
+         valid_percent = round(valid_percent*100),
+         gdm = ifelse(is.na(gdm), 'Missing', gdm))
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```

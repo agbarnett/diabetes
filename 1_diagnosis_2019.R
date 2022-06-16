@@ -51,7 +51,12 @@ diagnosis_2019 = mutate(diagnosis,
     gdm = case_when(
       ogtt == 'Yes' ~ 'Yes',
       is.na(ogtt) ~ NA_character_,
-      TRUE ~ 'No')
+      TRUE ~ 'No'),
+    overall = case_when(
+      early_gdm == 'Yes' ~ 'Early GDM', # this takes precedence
+      gdm == 'Yes' ~ 'GDM',
+      gdm == 'No' | early_gdm == 'No' ~ 'No' # using OR
+    )
   )
 
 # output checks
