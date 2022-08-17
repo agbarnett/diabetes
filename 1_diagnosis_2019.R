@@ -2,7 +2,7 @@
 # create the different diagnosis paths for gestational diabetes
 # for 2019 data
 # currently just using 1 imputed data set
-# June 2022
+# July 2022
 library(dplyr)
 
 # from 0_read_data.R
@@ -18,8 +18,12 @@ ogtt_diagnosis = left_join(mother_data, mother_glu_imputed[[1]], by = c('mother_
     glu2 > 8.4 ~ 'Yes',
     is.na(glufasting) & is.na(glu1) & is.na(glu2) ~ NA_character_,
     TRUE ~ 'No'
-  )) %>%
-  select('mother_id','preg_seq_id', 'facility_name','baby_birth_year', 'glufasting', 'glu1','glu2','ogtt', 'gdm_diagnosis') # keep a few additional variables in this data
+  )) %>% # add any mother variables used in 2_compare.Rmd
+  select('mother_id','preg_seq_id', 'facility_name','baby_birth_year', 
+         'body_mass_index', 'mother_birth_year',
+         'nr_prev_caesar', 'prev_pregnancies_flag',
+         "smoked_before_20wks", "smoked_after_20wks",
+         'glufasting', 'glu1','glu2','ogtt', 'gdm_diagnosis') # keep a few additional variables in this data
 # b) early ogtt
 early_ogtt_diagnosis = left_join(mother_data, mother_glu_imputed[[1]], by = c('mother_id','preg_seq_id')) %>%
   mutate(ogtt_early = case_when(
@@ -43,6 +47,7 @@ a1c_diagnosis = left_join(mother_data, mother_a1c_imputed[[1]], by = c('mother_i
 diagnosis = full_join(full_join(ogtt_diagnosis, early_ogtt_diagnosis, by= c('mother_id','preg_seq_id')),
                       a1c_diagnosis, by= c('mother_id','preg_seq_id'))
 # make variables
+# "case_when arguments are evaluated in order, so you must proceed from the most specific to the most general"
 diagnosis_2019 = mutate(diagnosis, 
     early_gdm = case_when(
       a1c_diag == 'Yes' | ogtt_early == 'Yes' ~ 'Yes',
@@ -55,7 +60,9 @@ diagnosis_2019 = mutate(diagnosis,
     overall = case_when(
       early_gdm == 'Yes' ~ 'Early GDM', # this takes precedence
       gdm == 'Yes' ~ 'GDM',
-      gdm == 'No' | early_gdm == 'No' ~ 'No' # using OR
+      gdm == 'No' | early_gdm == 'No' ~ 'No', # using OR
+      gdm_diagnosis == TRUE & is.na(gdm) == TRUE ~ 'GDM diagnosis with no glucose data',
+      gdm_diagnosis == FALSE & is.na(gdm) == TRUE ~ 'No GDM diagnosis with no glucose data'
     )
   )
 

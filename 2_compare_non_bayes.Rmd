@@ -1,0 +1,388 @@
+---
+title: "Compare 2019 and 2020 gestional diabetes data"
+output: html_document
+author: "Adrian Barnett"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+options(width=1000) # Wide pages
+options(scipen=999) # avoid scientific presentation
+library(ggplot2)
+g.theme = theme_bw() + theme(panel.grid.minor = element_blank())
+library(gridExtra)
+library(dplyr)
+library(lme4) # for model with random intercept
+library(stargazer) # for nice regression tables in html
+library(stringr)
+library(flextable)
+library(nimble) # for Bayesian models
+source('99_functions.R')
+
+# number of bootstraps
+n_boot = 1000
+
+## create outcomes in baby data
+# SGA and LGA cut offs
+load('data/ga_cut_offs.RData')
+## full data
+load('data/raw_data.RData') # from 0_read_data.R
+baby_data = mutate(baby_data, gestation_weeks = floor(gestation)) %>%
+  left_join(cut_offs, by=c('gestation_weeks','sex')) %>%
+  mutate(
+    twins_triplets = as.numeric(baby_data$plurality != 'Singleton'), # too few triplets to be their own category
+    preterm = gestation_weeks < 37, 
+         caesar = as.logical(labour_onset == 'No Labour (Caesarean Section)'), 
+         sga = birth_weight < small_cut, # below 10th percentile
+         lga = birth_weight > large_cut) # above 90th percentile
+# remove data not needed to make things clearer
+remove(baby_neonatal_treat, baby_resuscitation)
+
+## get the mother data with new diagnosis
+# select women based on their GDM diagnosis
+# 2019 group
+load('data/1_diagnosis_2019.RData')
+g2019 = filter(diagnosis_2019, overall == 'No') %>%
+  select(-overall)
+# 2020 group
+load('data/1_diagnosis_2020.RData')
+g2020 = filter(diagnosis_2020, gdm == 'No diagnosis based on fasting blood glucose only') %>%
+  select(-gdm)
+# combine and create 2020 cohort; also add mother-level variables
+mother = bind_rows(g2019, g2020, .id = 'group') %>%
+  mutate(group_2020 = case_when(
+    group == 1 ~ 0, # reference group of 2019
+    group == 2 ~ 1
+  ),
+  nr_prev_caesar = ifelse(prev_pregnancies_flag == 'No', 0, nr_prev_caesar), # first pregnancy has no previous caesars
+  age = baby_birth_year - mother_birth_year, # mother's age
+  age10 = (age - 30)/10, # scaling
+  body_mass_index5 = (body_mass_index - 25)/5,
+  smoked_before_20wks = as.numeric(smoked_before_20wks == 'Yes'), # smoking has small categories like "not stated"'
+  smoked_after_20wks = as.numeric(smoked_after_20wks == 'Yes')) %>%
+  select(-group)
+
+#### baby morbidity ##
+baby_small = select(baby_data, 'mother_id', 'preg_seq_id','birth_id', 'preterm', 'sga','lga')
+## distress
+# assume if not in morbidity data that distress is FALSE
+pattern = paste('Transient tachypnea of newborn','respiratory distress', collapse='|')
+baby_distress = filter(baby_neonatal_morb, # has multiple rows per baby
+ str_detect(neonatal_morbidity_code_text, pattern=pattern)) %>% 
+  mutate(distress = TRUE)  %>%
+  full_join(baby_small, by=c('mother_id', 'preg_seq_id','birth_id')) %>% # add preterm
+  mutate(distress = ifelse(is.na(distress), FALSE, distress)) 
+
+### hypoglycemia
+pattern = 'Other neonatal hypoglycemia'  # check on "Other hypoglycemia"
+baby_hypoglycemia = filter(baby_neonatal_morb, # has multiple rows per baby
+ str_detect(neonatal_morbidity_code_text, pattern=pattern)) %>% 
+  mutate(hypoglycemia = TRUE)  %>%
+  full_join(baby_small, by=c('mother_id', 'preg_seq_id','birth_id')) %>% # add sga/lga
+  mutate(hypoglycemia = ifelse(is.na(hypoglycemia), FALSE, hypoglycemia)) 
+
+
+# blind results for cohort?
+blind = TRUE
+
+# finding variables
+#dictionary[str_detect(tolower(dictionary$description), 'intrauterine'),]
+```
+
+This analysis compares perinatal complications between the 2020 group with "No GDM based on a FBGL < 4.7 mmol/l" with the 2019 group with "No GDM with an OGTT". The aim is to assess whether there was a difference in mother and baby outcomes for these two groups. We control for confounding using the variables identified in Nina's causal models. 
+
+The key statistic is the difference in outcome for the 2020 group compared with the 2019 group together with the 95% confidence interval. The confidence interval is key as it describes the likely range of effects and so can be used to rule out clinically meaningful changes in risk. 
+
+This initial version presents blinded results as the data on the birth group (2019 or 2020) has been scrambled meaning the results do not show the true differences for this predictor. Once the statistical models have been finalised, then birth group will be unscrambled.
+
+The models used a random intercept for each mother to control for the correlation in outcomes for mothers who gave birth in both years.
+
+<!--- The variable labelled "age10" is a 10 year increase in mother's age. --->
+
+The variable labelled "body_mass_index5" is a 5 kg/m2 increase in mother's BMI.
+
+There were too few triplets to analyse in their own category, so they were combined with twins.
+
+## Birth weight
+
+#### Regression model
+
+```{r, results='asis'}
+# causal diagram on page 211 (appendix F of Nina's thesis)
+bw = run_model(outcome = 'birth_weight',
+      predictors = c('body_mass_index5'),
+      bdata = baby_data,
+      dp = 0, 
+      blind_outcome = blind)
+stargazer(bw$model, 
+          type = 'html',
+          title = '',
+          ci = TRUE,
+          ci.separator = ' to ',
+          digits = 0,
+          report = 'vcs',
+          single.row = TRUE,
+          notes.append = FALSE,
+          star.cutoffs = NA,
+          omit.table.layout = "n",
+          omit.stat = c('ll','aic','bic','f'))
+```
+
+#### Summary statistics (birth weight)
+
+```{r}
+bw$summary
+```
+
+#### Missing data (birth weight)
+
+```{r}
+bw$missing
+```
+
+
+## Gestational age at delivery (weeks)
+
+#### Regression model
+
+```{r, results='asis'}
+# causal diagram on page 212 (appendix F of Nina's thesis) 
+# iugr = intrauterine growth retardation
+g_age = run_model(outcome = 'gestation',
+      predictors = c("smoked_before_20wks","smoked_after_20wks",'twins_triplets'),
+      bdata = baby_data,
+      blind_outcome = blind)
+stargazer(g_age$model, 
+          type = 'html',
+          title = '',
+          ci = TRUE,
+          ci.separator = ' to ',
+          digits = 1,
+          report = 'vcs',
+          single.row = TRUE,
+          notes.append = FALSE,
+          star.cutoffs = NA,
+          omit.table.layout = "n",
+          omit.stat = c('ll','aic','bic','f'))
+```
+
+#### Summary statistics (gestational age)
+
+```{r}
+g_age$summary
+```
+
+#### Missing data (gestational age)
+
+```{r}
+g_age$missing
+```
+
+## Small for gestational age (SGA)
+
+#### Regression model
+
+```{r, results='asis'}
+# causal diagram on page 212 (appendix F of Nina's thesis) 
+# iugr = intrauterine growth retardation
+sga = run_model(outcome = 'sga',
+      predictors = c("smoked_before_20wks","smoked_after_20wks",'twins_triplets'),
+      bdata = baby_data,
+      check_clt = FALSE,
+      binomial_outcome = FALSE,
+      n_boot = n_boot,
+      blind_outcome = blind)
+stargazer(sga$model, 
+          type = 'html',
+          title = '',
+          ci = TRUE,
+          ci.separator = ' to ',
+          digits = 1,
+          report = 'vcs',
+          single.row = TRUE,
+          notes.append = FALSE,
+          star.cutoffs = NA,
+          omit.table.layout = "n",
+          #apply.coef = exp,
+          #apply.se = exp,
+      omit.stat = c('ll','aic','bic','f'))
+```
+
+#### Summary statistics (SGA)
+
+```{r}
+sga$summary
+```
+
+#### Missing data (SGA)
+
+```{r}
+sga$missing
+```
+
+
+## Large for gestational age (LGA)
+
+#### Regression model
+
+```{r, results='asis'}
+# causal diagram on page 212 (appendix F of Nina's thesis) 
+# iugr = intrauterine growth retardation
+lga = run_model(outcome = 'lga',
+      predictors = c("smoked_before_20wks","smoked_after_20wks",'twins_triplets'),
+      bdata = baby_data,
+      check_clt = FALSE,
+      binomial_outcome = FALSE,
+      n_boot = n_boot,
+      blind_outcome = blind)
+stargazer(lga$model, 
+          type = 'html',
+          title = '',
+          ci = TRUE,
+          ci.separator = ' to ',
+          digits = 1,
+          report = 'vcs',
+          single.row = TRUE,
+          notes.append = FALSE,
+          star.cutoffs = NA,
+          omit.table.layout = "n",
+          #apply.coef = exp,
+          #apply.se = exp,
+          omit.stat = c('ll','aic','bic','f'))
+```
+
+Model did not converge with twins and triplets as a predictor as almost every twin/triplet was not LGA.
+
+#### Summary statistics (LGA)
+
+```{r}
+lga$summary
+```
+
+#### Missing data (LGA)
+
+```{r}
+lga$missing
+```
+
+
+## Caesarean delivery
+
+This outcome comes from the variable "Labour onset" being equal to "No Labour (Caesarean Section)".
+
+#### Regression model
+
+```{r, results='asis'}
+# causal diagram on page 212 (appendix F of Nina's thesis) 
+# need to add breech/transvers
+caesar = run_model(outcome = 'caesar',
+      predictors = c("lga","nr_prev_caesar"),
+      bdata = baby_data,
+      check_clt = FALSE,
+      binomial_outcome = FALSE,
+      n_boot = n_boot,
+      blind_outcome = blind)
+stargazer(caesar$model, 
+          type = 'html',
+          title = '',
+          ci = TRUE,
+          ci.separator = ' to ',
+          digits = 2,
+          report = 'vcs',
+          single.row = TRUE,
+          notes.append = FALSE,
+          star.cutoffs = NA,
+          omit.table.layout = "n",
+          omit.stat = c('ll','aic','bic','f'))
+```
+
+#### Summary statistics (caesar)
+
+```{r}
+caesar$summary
+```
+
+#### Missing data (caesar)
+
+```{r}
+caesar$missing
+```
+
+
+## Neonatal hypoglycaemia
+
+```{r, results='asis'}
+hypoglycemia = run_model(outcome = 'hypoglycemia',
+      predictors = c("lga","sga","preterm"),
+      bdata = baby_hypoglycemia,
+      check_clt = FALSE,
+      binomial_outcome = FALSE,
+      n_boot = n_boot,
+      blind_outcome = blind)
+stargazer(hypoglycemia$model, 
+          type = 'html',
+          title = '',
+          ci = TRUE,
+          ci.separator = ' to ',
+          digits = 2,
+          report = 'vcs',
+          single.row = TRUE,
+          notes.append = FALSE,
+          star.cutoffs = NA,
+          omit.table.layout = "n",
+          omit.stat = c('ll','aic','bic','f'))
+```
+
+#### Summary statistics (hypoglycemia)
+
+```{r}
+hypoglycemia$summary
+```
+
+#### Missing data (hypoglycemia)
+
+```{r}
+hypoglycemia$missing
+```
+
+
+
+## Gestational hypertension
+
+_To come._
+
+## Neonatal intensive or special care admission 
+
+_To come._
+
+
+# Summary plot
+
+The plot shows the means and 95% confidence intervals for the estimated differences between the 2019 and 2020 groups. 
+
+```{r}
+# probabilities
+to_plot = bind_rows(sga$g2020, lga$g2020, caesar$g2020, hypoglycemia$g2020)
+pr_plot = ggplot(data=to_plot, aes(x=outcome, y=estimate, ymin=conf.low, ymax=conf.high))+
+  geom_hline(lty=2, col='dark red', yintercept=0)+
+  geom_point(col='darkseagreen', size=4)+
+  geom_errorbar(col='darkseagreen', size=1.05, width=0)+
+  coord_flip()+
+  ylab('Probability difference')+
+  xlab('')+
+  ggtitle('Probabilities for binomial variables')+
+  g.theme
+# percent changes
+to_plot = bind_rows(bw$g2020, g_age$g2020)
+pc_plot = ggplot(data=to_plot, aes(x=outcome, y=estimate, ymin=conf.low, ymax=conf.high))+
+  geom_hline(lty=2, col='dark red', yintercept=0)+
+  geom_point(col='dodgerblue', size=4)+
+  geom_errorbar(col='dodgerblue', size=1.05, width=0)+
+  coord_flip()+
+  ylab('Percent change')+
+  xlab('')+
+  ggtitle('Percent change for continuous variables')+
+  g.theme
+grid.arrange(pc_plot, pr_plot, ncol=1, heights=c(1,1.5))
+```

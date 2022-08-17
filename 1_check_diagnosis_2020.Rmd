@@ -16,7 +16,7 @@ library(dplyr)
 library(janitor)
 library(flextable)
 set_flextable_defaults(big.mark='') 
-n_sample = 5 # number to sample per diagnosis
+n_sample = 30 # number to sample per diagnosis
 TeachingDemos::char2seed('barrow')
 
 # randomly sample mothers, just those with 1 pregnancy
@@ -27,7 +27,7 @@ single_pregnancy = group_by(diagnosis_2020, mother_id) %>%
   select(mother_id)
 sample = left_join(single_pregnancy, diagnosis_2020, by='mother_id') %>%
   filter(gdm == this_diagnosis) %>% # from 1_diagnosis_2020.R
-  sample_n(size=5, replace=TRUE) %>% # 5 per diagnosis (use replace because of one small group)
+  sample_n(size=n_sample, replace=TRUE) %>% # (use replace because of one small group)
   unique() %>% # to remove multiple samples
   arrange(mother_id) %>%
   select(mother_id)

@@ -26,7 +26,7 @@ load('data/1_diagnosis_2020.RData')
 tab = tabyl(diagnosis_2019, overall) %>%
   arrange(-n) %>%
   mutate(percent = round(percent*100),
-         valid_percent = round(valid_percent*100),
+         #valid_percent = round(valid_percent*100),
          overall = ifelse(is.na(overall), 'Missing', overall))
 ftab = flextable(tab) %>%
   theme_box() %>%
@@ -34,15 +34,16 @@ ftab = flextable(tab) %>%
 ftab
 ```
 
+Women were given a "No" overall in the above table if their early GDM or GDM was "No". So if one was missing and one "No", they were classed as "No".
+
 # 2020
 
 ```{r}
-tab = mutate(diagnosis_2020, 
-             gdm = ifelse(gdm=='Missing', NA, gdm)) %>% # so that valid percent works
+tab = mutate(diagnosis_2020) %>% # so that valid percent works
   tabyl(gdm) %>%
   arrange(-n) %>%
   mutate(percent = round(percent*100),
-         valid_percent = round(valid_percent*100),
+         #valid_percent = round(valid_percent*100),
          gdm = ifelse(is.na(gdm), 'Missing', gdm))
 ftab = flextable(tab) %>%
   theme_box() %>%

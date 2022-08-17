@@ -1,0 +1,834 @@
+---
+title: "Compare 2019 and 2020 gestional diabetes data"
+output:
+  word_document:
+    reference_docx: "bmj-open-style.docx"
+author: "Adrian Barnett"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+options(width=1000) # Wide pages
+options(scipen=999) # avoid scientific presentation
+library(ggplot2)
+g.theme = theme_bw() + theme(panel.grid.minor = element_blank())
+library(gridExtra)
+library(dplyr)
+library(lme4) # for model with random intercept
+library(stringr)
+library(flextable)
+library(nimble) # for Bayesian models
+library(coda)
+source('99_functions.R')
+source("99_Bayes_models.R")
+
+# number of bootstraps
+n_boot = 1000
+
+# causal diagrams from U:\Research\Projects\ihbi\aushsi\aushsi_barnetta\People\NinaM\thesis
+
+## create outcomes in baby data
+# SGA and LGA cut offs
+load('data/ga_cut_offs.RData')
+## full data
+load('data/raw_data.RData') # from 0_read_data.R
+baby_data = mutate(baby_data, gestation_weeks = floor(gestation)) %>%
+  left_join(cut_offs, by=c('gestation_weeks','sex')) %>%
+  mutate(
+    twins_triplets = as.numeric(baby_data$plurality != 'Singleton'), # too few triplets to be their own category
+    # outcomes:
+    icn_scn_admission_flag = icn_scn_admission_flag == 'Yes', # special care nursery
+    preterm = gestation_weeks < 37, 
+    caesar = as.logical(labour_onset == 'No Labour (Caesarean Section)'), 
+    sga = birth_weight < small_cut, # below 10th percentile
+    lga = birth_weight > large_cut) # above 90th percentile
+# remove data not needed to make things clearer
+remove(baby_neonatal_treat, baby_resuscitation)
+
+# add IUGR
+iugr = filter(baby_neonatal_morb, neonatal_morbidity_code=='P059') %>%
+  select(ends_with('_id')) %>%
+  mutate(iugr = TRUE)
+baby_data = left_join(baby_data, iugr, by=c('mother_id', 'preg_seq_id', 'birth_id')) %>%
+  mutate(iugr = ifelse(is.na(iugr), FALSE, iugr))
+  
+
+## get the mother data with new diagnosis
+# select women based on their GDM diagnosis
+# 2019 group
+load('data/1_diagnosis_2019.RData')
+g2019 = filter(diagnosis_2019, overall == 'No') %>%
+  select(-overall)
+# 2020 group
+load('data/1_diagnosis_2020.RData')
+g2020 = filter(diagnosis_2020, gdm == 'No diagnosis based on fasting blood glucose only') %>%
+  select(-gdm)
+# combine and create 2020 cohort; also add mother-level variables
+mother = bind_rows(g2019, g2020, .id = 'group') %>%
+  mutate(group_2020 = case_when(
+    group == 1 ~ 0, # reference group of 2019
+    group == 2 ~ 1
+  ),
+  nr_prev_caesar = ifelse(prev_pregnancies_flag == 'No', 0, nr_prev_caesar), # first pregnancy has no previous caesars
+  age = baby_birth_year - mother_birth_year, # mother's age
+  age10 = (age - 30)/10, # scaling
+  body_mass_index5 = (body_mass_index - 25)/5,
+  smoked_before_20wks = as.numeric(smoked_before_20wks == 'Yes'), # smoking has small categories like "not stated"'
+  smoked_after_20wks = as.numeric(smoked_after_20wks == 'Yes')) %>%
+  select(-group)
+
+## add outcome of gestational hypertension to mother data
+gtn = filter(mother_preg_complicatn, str_detect(pregnancy_complication, '^O11|^O13|^O14|^O16')) %>%
+  select(ends_with('_id')) %>%
+  unique() %>% # because there can be multiple outcomes per mother
+  mutate(gtn = TRUE)
+mother = left_join(mother, gtn, by=c('mother_id','preg_seq_id')) %>%
+    mutate(gtn = ifelse(is.na(gtn), FALSE, gtn)) 
+
+#### baby morbidity ##
+baby_small = select(baby_data, 'mother_id', 'preg_seq_id','birth_id', 'preterm', 'sga','lga')
+## distress
+# assume if not in morbidity data that distress is FALSE
+pattern = paste(c('transient tachypnea of newborn','respiratory distress'), collapse='|')
+baby_distress = filter(baby_neonatal_morb, # has multiple rows per baby
+ str_detect(tolower(neonatal_morbidity_code_text), pattern=pattern)) %>% 
+  select('mother_id', 'preg_seq_id','birth_id') %>%
+  unique() %>% # because same baby can have multiple respiratory outcomes
+  mutate(distress = TRUE) %>%
+  full_join(baby_small, by=c('mother_id', 'preg_seq_id','birth_id')) %>% # add preterm
+  mutate(distress = ifelse(is.na(distress), FALSE, distress)) 
+
+### hypoglycemia
+pattern = 'Other neonatal hypoglycemia'  # check on "Other hypoglycemia"
+baby_hypoglycemia = filter(baby_neonatal_morb, # has multiple rows per baby
+ str_detect(neonatal_morbidity_code_text, pattern=pattern)) %>% 
+  mutate(hypoglycemia = TRUE)  %>%
+  full_join(baby_small, by=c('mother_id', 'preg_seq_id','birth_id')) %>% # add sga/lga
+  mutate(hypoglycemia = ifelse(is.na(hypoglycemia), FALSE, hypoglycemia)) 
+
+# blind results for cohort?
+blind = TRUE
+
+# finding variables
+#dictionary[str_detect(tolower(dictionary$description), 'intrauterine'),]
+```
+
+This analysis compares perinatal complications between the 2020 group with "No GDM based on a FBGL < 4.7 mmol/l" with the 2019 group with "No GDM with an OGTT". The aim is to assess whether there was a difference in mother and baby outcomes for these two groups. We attempt to control for confounding using the variables identified in Nina's causal models.
+
+The models used a random intercept for each mother to control for the correlation in outcomes for mothers who gave birth in both years. We fitted models with and without an intercept and chose the most appropriate model for each outcome based on the Widely Applicable Information Criterion (WAIC) which balances model fit and complexity.
+
+The models were fitted in a Bayesian paradigm so the key statistic is the 95% credible interval for the difference between the 2019 and 2020 groups. This interval has a 95% probability of containing the true difference, which is a much simpler interpretation that standard 95% confidence intervals. The key question is whether this interval includes or excludes clinically meaningful differences.
+
+This initial version presents blinded results as the data on the birth group (2019 or 2020) has been scrambled meaning the results do not show the true differences for this predictor. Once the statistical models have been finalised, then birth group will be unscrambled.
+
+<!--- The variable labelled "age10" is a 10 year increase in mother's age. --->
+
+The variable labelled "body_mass_index5" is a 5 kg/m2 increase in mother's BMI.
+
+There were too few triplets to analyse in their own category, so they were combined with twins.
+
+##### page break
+
+## Birth weight
+
+```{r, include=FALSE}
+file = c('results','birth_weight')
+outfile = make_file(file)
+if(outfile$exists == FALSE){
+  # causal diagram on page 211 (appendix F of Nina's thesis)
+  bw = run_model_bayes(outcome = 'birth_weight',
+                 predictors = c('body_mass_index5'),
+                 bdata = baby_data,
+                 mdata = mother, 
+                 dp = 0, 
+                 blind_outcome = blind)
+  save(bw, file = outfile$file)
+}
+if(outfile$exists == TRUE){
+  load(outfile$file)
+}
+```
+
+#### Model fit (birth weight)
+
+```{r}
+select(bw$model_fit, -outcome) %>%
+  flextable() %>%
+  theme_box() %>%
+  colformat_double(j=2, digits = 1) %>%
+  colformat_double(j=3, digits = 0) %>%
+  autofit()
+# for text
+fit_with = filter(bw$model_fit, model=='With intercept') %>% pull(WAIC)
+fit_without = filter(bw$model_fit, model=='Without intercept') %>% pull(WAIC)
+diff = fit_with - fit_without
+with_without = ifelse(diff < -2,'with','without')
+# for best estimates
+if(with_without == 'with'){
+  bw$g2020 = filter(bw$g2020, with_intercept == TRUE)
+  bw$table = filter(bw$table, with_intercept == TRUE)
+}
+if(with_without == 'without'){
+  bw$g2020 = filter(bw$g2020, with_intercept == FALSE)
+  bw$table = filter(bw$table, with_intercept == FALSE)
+}
+```
+
+The smaller the WAIC the better the model. The column "pWAIC" is the estimated number of parameters.
+The best model is the model `r with_without` the intercept for each mother.
+
+#### Regression model (birth weight)
+
+```{r}
+ftab = bayes_table(bw$table) %>%
+  flextable() %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+"sd" is the standard deviation for the model error. 
+
+#### Summary statistics (birth weight)
+
+```{r}
+bw$summary
+```
+
+#### Missing data (birth weight)
+
+```{r}
+bw$missing
+```
+
+##### page break
+
+## Gestational age at delivery (weeks)
+
+
+```{r, include=FALSE}
+file = c('results','gestation')
+outfile = make_file(file)
+if(outfile$exists == FALSE){
+# causal diagram on page 212 (appendix F of Nina's thesis) 
+  g_age = run_model_bayes(outcome = 'gestation',
+         predictors = c("smoked_before_20wks","smoked_after_20wks",'twins_triplets'),
+         mdata = mother, 
+         bdata = baby_data,
+         dp = 1, 
+         blind_outcome = blind)
+  save(g_age, file = outfile$file)
+}
+if(outfile$exists == TRUE){
+  load(outfile$file)
+}
+```
+
+#### Model fit (birth weight)
+
+```{r}
+select(g_age$model_fit, -outcome) %>%
+  flextable() %>%
+  theme_box() %>%
+  colformat_double(j=2, digits = 1) %>%
+  colformat_double(j=3, digits = 0) %>%
+  autofit()
+# for text
+fit_with = filter(g_age$model_fit, model=='With intercept') %>% pull(WAIC)
+fit_without = filter(g_age$model_fit, model=='Without intercept') %>% pull(WAIC)
+diff = fit_with - fit_without
+with_without = ifelse(diff < -2,'with','without')
+# for best estimates
+if(with_without == 'with'){
+  g_age$g2020 = filter(g_age$g2020, with_intercept == TRUE)
+  g_age$table = filter(g_age$table, with_intercept == TRUE)
+}
+if(with_without == 'without'){
+  g_age$g2020 = filter(g_age$g2020, with_intercept == FALSE)
+  g_age$table = filter(g_age$table, with_intercept == FALSE)
+}
+```
+
+The smaller the WAIC the better the model. The column "pWAIC" is the estimated number of parameters.
+The best model is the model `r with_without` the intercept for each mother.
+
+#### Regression model (gestational age)
+
+```{r}
+ftab = bayes_table(g_age$table, dp=2) %>%
+  flextable() %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+"sd.mother" is the standard deviation for random intercept for mothers. The larger this value, the more difference between mothers. 
+
+#### Summary statistics (gestational age)
+
+```{r}
+g_age$summary
+```
+
+#### Missing data (gestational age)
+
+```{r}
+g_age$missing
+```
+
+##### page break
+
+## Small for gestational age (SGA)
+
+```{r, include=FALSE}
+file = c('results','sga')
+outfile = make_file(file)
+if(outfile$exists == FALSE){
+  # causal diagram on page 212 (appendix F of Nina's thesis) 
+  sga = run_model_bayes(outcome = 'sga',
+        predictors = c("iugr","smoked_before_20wks","smoked_after_20wks",'twins_triplets'),
+        mdata = mother,
+        bdata = baby_data,
+        dp = 2,
+        blind_outcome = blind)
+  save(sga, file = outfile$file)
+}
+if(outfile$exists == TRUE){
+  load(outfile$file)
+}
+```
+
+#### Model fit (SGA)
+
+```{r}
+select(sga$model_fit, -outcome) %>%
+  flextable() %>%
+  theme_box() %>%
+  colformat_double(j=2, digits = 1) %>%
+  colformat_double(j=3, digits = 0) %>%
+  autofit()
+# for text
+fit_with = filter(sga$model_fit, model=='With intercept') %>% pull(WAIC)
+fit_without = filter(sga$model_fit, model=='Without intercept') %>% pull(WAIC)
+diff = fit_with - fit_without
+with_without = ifelse(diff < -2,'with','without')
+# for best estimates
+if(with_without == 'with'){
+  sga$g2020 = filter(sga$g2020, with_intercept == TRUE)
+  sga$table = filter(sga$table, with_intercept == TRUE)
+}
+if(with_without == 'without'){
+  sga$g2020 = filter(sga$g2020, with_intercept == FALSE)
+  sga$table = filter(sga$table, with_intercept == FALSE)
+}
+```
+
+The smaller the WAIC the better the model. The column "pWAIC" is the estimated number of parameters.
+The best model is the model `r with_without` the intercept for each mother.
+
+#### Regression model (SGA)
+
+```{r}
+ftab = bayes_table(sga$table, dp=2) %>%
+  flextable() %>%
+  theme_box() %>%
+  autofit()
+ftab
+# for text
+text_mean = filter(sga$table, var=='twins_triplets') %>% pull(mean) %>% roundz(2)
+```
+
+The results are on the scale of probability. For example, the estimate for twins and triplets shows an increased probability of being small for gestational age of `r text_mean` compared with singletons. 
+
+#### Summary statistics (SGA)
+
+```{r}
+sga$summary
+```
+
+#### Missing data (SGA)
+
+```{r}
+sga$missing
+```
+
+##### page break
+
+## Large for gestational age (LGA)
+
+```{r, include=FALSE}
+# causal diagram on page 212 (appendix F of Nina's thesis) 
+file = c('results','lga')
+outfile = make_file(file)
+if(outfile$exists == FALSE){
+  # causal diagram on page 212 (appendix F of Nina's thesis) 
+  # iugr = intrauterine growth retardation
+  lga = run_model_bayes(outcome = 'lga',
+      predictors = c("smoked_before_20wks","smoked_after_20wks",'twins_triplets'),
+      mdata = mother,
+      bdata = baby_data,
+      dp = 2, 
+      blind_outcome = blind)
+  save(lga, file = outfile$file)
+}
+if(outfile$exists == TRUE){
+  load(outfile$file)
+}
+```
+
+#### Model fit (LGA)
+
+```{r}
+select(lga$model_fit, -outcome) %>%
+  flextable() %>%
+  theme_box() %>%
+  colformat_double(j=2, digits = 1) %>%
+  colformat_double(j=3, digits = 0) %>%
+  autofit()
+# for text
+fit_with = filter(lga$model_fit, model=='With intercept') %>% pull(WAIC)
+fit_without = filter(lga$model_fit, model=='Without intercept') %>% pull(WAIC)
+diff = fit_with - fit_without
+with_without = ifelse(diff < -2,'with','without')
+# for best estimates
+if(with_without == 'with'){
+  lga$g2020 = filter(lga$g2020, with_intercept == TRUE)
+  lga$table = filter(lga$table, with_intercept == TRUE)
+}
+if(with_without == 'without'){
+  lga$g2020 = filter(lga$g2020, with_intercept == FALSE)
+  lga$table = filter(lga$table, with_intercept == FALSE)
+}
+```
+
+The smaller the WAIC the better the model. The column "pWAIC" is the estimated number of parameters.
+The best model is the model `r with_without` the intercept for each mother.
+
+#### Regression model (LGA)
+
+```{r}
+ftab = bayes_table(lga$table, dp=2) %>%
+  flextable() %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+#### Summary statistics (LGA)
+
+```{r}
+lga$summary
+```
+
+#### Missing data (LGA)
+
+```{r}
+lga$missing
+```
+
+##### page break
+
+## Caesarean delivery
+
+This outcome comes from the variable "Labour onset" being equal to "No Labour (Caesarean Section)".
+
+```{r, include=FALSE}
+# causal diagram on page 212 (appendix F of Nina's thesis) 
+# need to add breech/transverse
+file = c('results','caesar')
+outfile = make_file(file)
+if(outfile$exists == FALSE){
+  # causal diagram on page 212 (appendix F of Nina's thesis) 
+  # missing breech
+  caesar = run_model_bayes(outcome = 'caesar',
+                   predictors = c("body_mass_index5","lga","nr_prev_caesar"),
+                   mdata = mother,
+                   bdata = baby_data,
+                   blind_outcome = blind)
+  save(caesar, file = outfile$file)
+}
+if(outfile$exists == TRUE){
+  load(outfile$file)
+}
+```
+
+#### Model fit (caesar)
+
+```{r}
+select(caesar$model_fit, -outcome) %>%
+  flextable() %>%
+  theme_box() %>%
+  colformat_double(j=2, digits = 1) %>%
+  colformat_double(j=3, digits = 0) %>%
+  autofit()
+# for text
+fit_with = filter(caesar$model_fit, model=='With intercept') %>% pull(WAIC)
+fit_without = filter(caesar$model_fit, model=='Without intercept') %>% pull(WAIC)
+diff = fit_with - fit_without
+with_without = ifelse(diff < -2,'with','without')
+# for best estimates
+if(with_without == 'with'){
+  caesar$g2020 = filter(caesar$g2020, with_intercept == TRUE)
+  caesar$table = filter(caesar$table, with_intercept == TRUE)
+}
+if(with_without == 'without'){
+  caesar$g2020 = filter(caesar$g2020, with_intercept == FALSE)
+  caesar$table = filter(caesar$table, with_intercept == FALSE)
+}
+```
+
+The smaller the WAIC the better the model. The column "pWAIC" is the estimated number of parameters.
+The best model is the model `r with_without` the intercept for each mother.
+
+#### Regression model (caesar)
+
+```{r}
+ftab = bayes_table(caesar$table, dp=2) %>%
+  flextable() %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+#### Summary statistics (caesar)
+
+```{r}
+caesar$summary
+```
+
+#### Missing data (caesar)
+
+```{r}
+caesar$missing
+```
+
+##### page break
+
+## Neonatal hypoglycaemia
+
+```{r, include=FALSE}
+file = c('results','hypoglycemia')
+outfile = make_file(file)
+if(outfile$exists == FALSE){
+  # causal diagram on page 212 (appendix F of Nina's thesis) 
+  # iugr = intrauterine growth retardation
+  hypoglycemia = run_model_bayes(outcome = 'hypoglycemia',
+                   predictors = c("lga","sga","preterm"),
+                   mdata = mother,
+                   bdata = baby_hypoglycemia,
+                   blind_outcome = blind)
+  save(hypoglycemia, file = outfile$file)
+}
+if(outfile$exists == TRUE){
+  load(outfile$file)
+}
+```
+
+#### Model fit (hypoglycemia)
+
+```{r}
+select(hypoglycemia$model_fit, -outcome) %>%
+  flextable() %>%
+  theme_box() %>%
+  colformat_double(j=2, digits = 1) %>%
+  colformat_double(j=3, digits = 0) %>%
+  autofit()
+# for text
+fit_with = filter(hypoglycemia$model_fit, model=='With intercept') %>% pull(WAIC)
+fit_without = filter(hypoglycemia$model_fit, model=='Without intercept') %>% pull(WAIC)
+diff = fit_with - fit_without
+with_without = ifelse(diff < -2,'with','without')
+# for best estimates
+if(with_without == 'with'){
+  hypoglycemia$g2020 = filter(hypoglycemia$g2020, with_intercept == TRUE)
+  hypoglycemia$table = filter(hypoglycemia$table, with_intercept == TRUE)
+}
+if(with_without == 'without'){
+  hypoglycemia$g2020 = filter(hypoglycemia$g2020, with_intercept == FALSE)
+  hypoglycemia$table = filter(hypoglycemia$table, with_intercept == FALSE)
+}
+```
+
+The smaller the WAIC the better the model. The column "pWAIC" is the estimated number of parameters.
+The best model is the model `r with_without` the intercept for each mother.
+
+#### Regression model (hypoglycemia)
+
+```{r}
+ftab = bayes_table(hypoglycemia$table, dp=2) %>%
+  flextable() %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+#### Summary statistics (hypoglycemia)
+
+```{r}
+hypoglycemia$summary
+```
+
+#### Missing data (hypoglycemia)
+
+```{r}
+hypoglycemia$missing
+```
+
+
+## Gestational hypertension
+
+Maternal hypertension.
+
+```{r, include=FALSE}
+file = c('results','gtn')
+outfile = make_file(file)
+if(outfile$exists == FALSE){
+  # causal diagram on page 214
+  gtn = run_model_bayes(outcome = 'gtn',
+                 predictors = c('body_mass_index5',"smoked_before_20wks","smoked_after_20wks",'twins_triplets'),
+                 bdata = baby_data,
+                 mdata = mother, 
+                 blind_outcome = blind)
+  save(gtn, file = outfile$file)
+}
+if(outfile$exists == TRUE){
+  load(outfile$file)
+}
+```
+
+#### Model fit (gestational hypertension)
+
+```{r}
+select(gtn$model_fit, -outcome) %>%
+  flextable() %>%
+  theme_box() %>%
+  colformat_double(j=2, digits = 1) %>%
+  colformat_double(j=3, digits = 0) %>%
+  autofit()
+# for text
+fit_with = filter(gtn$model_fit, model=='With intercept') %>% pull(WAIC)
+fit_without = filter(gtn$model_fit, model=='Without intercept') %>% pull(WAIC)
+diff = fit_with - fit_without
+with_without = ifelse(diff < -2,'with','without')
+# for best estimates
+if(with_without == 'with'){
+  gtn$g2020 = filter(gtn$g2020, with_intercept == TRUE)
+  gtn$table = filter(gtn$table, with_intercept == TRUE)
+}
+if(with_without == 'without'){
+  gtn$g2020 = filter(gtn$g2020, with_intercept == FALSE)
+  gtn$table = filter(gtn$table, with_intercept == FALSE)
+}
+```
+
+The smaller the WAIC the better the model. The column "pWAIC" is the estimated number of parameters.
+The best model is the model `r with_without` the intercept for each mother.
+
+#### Regression model (gestational hypertension)
+
+```{r}
+ftab = bayes_table(gtn$table, dp=2) %>%
+  flextable() %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+"sd" is the standard deviation for the model error. 
+
+#### Summary statistics (gestational hypertension)
+
+```{r}
+gtn$summary
+```
+
+#### Missing data (gestational hypertension)
+
+```{r}
+gtn$missing
+```
+
+##### page break
+
+## Neonatal intensive or special care admission 
+
+```{r, include=FALSE}
+file = c('results','nicu')
+outfile = make_file(file)
+if(outfile$exists == FALSE){
+  # causal diagram on page 211 (appendix F of Nina's thesis)
+  nicu = run_model_bayes(outcome = 'icn_scn_admission_flag',
+                 predictors = c('body_mass_index5'),
+                 bdata = baby_data,
+                 mdata = mother, 
+                 blind_outcome = blind)
+  save(nicu, file = outfile$file)
+}
+if(outfile$exists == TRUE){
+  load(outfile$file)
+}
+```
+
+#### Model fit (neonatal intensive or special care admission)
+
+```{r}
+select(nicu$model_fit, -outcome) %>%
+  flextable() %>%
+  theme_box() %>%
+  colformat_double(j=2, digits = 1) %>%
+  colformat_double(j=3, digits = 0) %>%
+  autofit()
+# for text
+fit_with = filter(nicu$model_fit, model=='With intercept') %>% pull(WAIC)
+fit_without = filter(nicu$model_fit, model=='Without intercept') %>% pull(WAIC)
+diff = fit_with - fit_without
+with_without = ifelse(diff < -2,'with','without')
+# for best estimates
+if(with_without == 'with'){
+  nicu$g2020 = filter(nicu$g2020, with_intercept == TRUE)
+  nicu$table = filter(nicu$table, with_intercept == TRUE)
+}
+if(with_without == 'without'){
+  nicu$g2020 = filter(nicu$g2020, with_intercept == FALSE)
+  nicu$table = filter(nicu$table, with_intercept == FALSE)
+}
+```
+
+The smaller the WAIC the better the model. The column "pWAIC" is the estimated number of parameters.
+The best model is the model `r with_without` the intercept for each mother.
+
+#### Regression model (neonatal intensive or special care admission)
+
+```{r}
+ftab = bayes_table(nicu$table, dp=2) %>%
+  flextable() %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+"sd" is the standard deviation for the model error. 
+
+#### Summary statistics (neonatal intensive or special care admission)
+
+```{r}
+nicu$summary
+```
+
+#### Missing data (neonatal intensive or special care admission)
+
+```{r}
+nicu$missing
+```
+
+##### page break
+
+## Respiratory distress 
+
+```{r, include=FALSE}
+file = c('results','distress')
+outfile = make_file(file)
+if(outfile$exists == FALSE){
+  # causal diagram on page 211 (appendix F of Nina's thesis)
+  distress = run_model_bayes(outcome = 'distress',
+                         predictors = c('body_mass_index5'),
+                         bdata = baby_distress,
+                         mdata = mother, 
+                         blind_outcome = blind)
+  save(distress, file = outfile$file)
+}
+if(outfile$exists == TRUE){
+  load(outfile$file)
+}
+```
+
+#### Model fit (respiratory distress)
+
+```{r}
+select(distress$model_fit, -outcome) %>%
+  flextable() %>%
+  theme_box() %>%
+  colformat_double(j=2, digits = 1) %>%
+  colformat_double(j=3, digits = 0) %>%
+  autofit()
+# for text
+fit_with = filter(distress$model_fit, model=='With intercept') %>% pull(WAIC)
+fit_without = filter(distress$model_fit, model=='Without intercept') %>% pull(WAIC)
+diff = fit_with - fit_without
+with_without = ifelse(diff < -2,'with','without')
+# for best estimates
+if(with_without == 'with'){
+  distress$g2020 = filter(distress$g2020, with_intercept == TRUE)
+  distress$table = filter(distress$table, with_intercept == TRUE)
+}
+if(with_without == 'without'){
+  distress$g2020 = filter(distress$g2020, with_intercept == FALSE)
+  distress$table = filter(distress$table, with_intercept == FALSE)
+}
+```
+
+The smaller the WAIC the better the model. The column "pWAIC" is the estimated number of parameters.
+The best model is the model `r with_without` the intercept for each mother.
+
+#### Regression model (respiratory distress)
+
+```{r}
+ftab = bayes_table(distress$table, dp=2) %>%
+  flextable() %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+"sd" is the standard deviation for the model error. 
+
+#### Summary statistics (respiratory distress)
+
+```{r}
+distress$summary
+```
+
+#### Missing data (respiratory distress)
+
+```{r}
+distress$missing
+```
+
+##### page break
+
+# Summary plot
+
+The plot shows the means and 95% confidence intervals for the estimated differences between the 2019 and 2020 groups. 
+
+```{r, fig.height=7}
+# probabilities
+labels1 = c('SGA','LGA','Caesarean','Hypoglycemia','Gestational\nhypertension','NICU/SCN','Respiratory\ndistress')
+labels2 = c('Birthweight','Gestational age')
+to_plot = bind_rows(sga$g2020, lga$g2020, caesar$g2020, hypoglycemia$g2020, gtn$g2020, nicu$g2020, distress$g2020, .id = 'outcome') %>%
+  mutate(outcome = factor(outcome, levels=1:7, labels=labels1))
+pr_plot = ggplot(data=to_plot, aes(x=outcome, y=mean, ymin=lower, ymax=upper))+
+  geom_hline(lty=2, col='dark red', yintercept=0)+
+  geom_point(col='darkseagreen', size=4)+
+  geom_errorbar(col='darkseagreen', size=1.05, width=0)+
+  coord_flip()+
+  ylab('Probability difference')+
+  xlab('')+
+  ggtitle('Probabilities for binomial variables')+
+  g.theme
+## percent changes
+bw_change = make_percent_change(bw$table)
+g_age_change = make_percent_change(g_age$table)
+to_plot = bind_rows(bw_change, g_age_change, .id = 'outcome') %>%
+  mutate(outcome = factor(outcome, levels=1:2, labels=labels2))
+pc_plot = ggplot(data=to_plot, aes(x=outcome, y=mean, ymin=lower, ymax=upper))+
+  geom_hline(lty=2, col='dark red', yintercept=0)+
+  geom_point(col='dodgerblue', size=4)+
+  geom_errorbar(col='dodgerblue', size=1.05, width=0)+
+  coord_flip()+
+  ylab('Percent change')+
+  xlab('')+
+  ggtitle('Percent change for continuous variables')+
+  g.theme
+grid.arrange(pc_plot, pr_plot, ncol=1, heights=c(1,1.7))
+```

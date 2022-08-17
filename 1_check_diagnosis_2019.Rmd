@@ -5,7 +5,6 @@ date: "`r format(Sys.time(), '%d %B, %Y')`"
 output: word_document
 ---
 
-  
 ```{r, include=FALSE}
 # called from 1_diagnosis.R
 
@@ -16,7 +15,7 @@ library(dplyr)
 library(janitor)
 library(flextable)
 set_flextable_defaults(big.mark='') 
-n_sample = 5 # number to sample
+n_sample = 30 # number to sample
 TeachingDemos::char2seed('barrow')
 
 # randomly sample mothers, just those with 1 pregnancy
@@ -26,7 +25,7 @@ single_pregnancy = group_by(diagnosis_2019, mother_id) %>%
   filter(pregs == 1) %>%
   select(mother_id)
 to_sample = left_join(single_pregnancy, diagnosis_2019, by='mother_id')
-# a) missing
+# a) missing both
 sample_NA = filter(to_sample, is.na(early_gdm) & is.na(gdm)) %>%
   filter(facility_name =="Royal Brisbane and Women's") %>% # temporary
   sample_n(n_sample) %>%
@@ -39,37 +38,25 @@ sample_positive = filter(to_sample, early_gdm == 'Yes' | gdm =='Yes') %>%
 sample_negative = filter(to_sample, early_gdm == 'No' | gdm =='No') %>%
   sample_n(n_sample) %>%
   select(mother_id)
+# d) with a ICD code diagnosis but no blood data
+sample_icd_positive = filter(to_sample, overall == 'GDM diagnosis with no glucose data') %>%
+  sample_n(n_sample) %>%
+  select(mother_id)
+# e) with a negative ICD code diagnosis but no blood data
+sample_icd_negative = filter(to_sample, overall == 'No GDM diagnosis with no glucose data') %>%
+  sample_n(n_sample) %>%
+  select(mother_id)
 ```
 
 We take random samples of the data to examine how Adrian's diagnosis coding has worked. For simplicity we exclude women who had two pregnancies in the same year.
 
-# Missing data for GDM diagnosis
 
-First we look at missing GDM diagnosis (using my derivation) by facility. The cells show the missing numbers and within-facility percentage of missing. The rows are arranged by the percent missing.
-
-```{r}
-tab = mutate(diagnosis_2019, missing = is.na(gdm) & is.na(early_gdm),
-             missing = ifelse(missing==TRUE, 'Missing','Not missing')) %>%
-  group_by(facility_name, missing) %>%
-  tally() %>%
-  group_by(facility_name) %>%
-  mutate(percent = round(prop.table(n)*100)) %>%
-  filter(missing == 'Missing') %>%
-  arrange(desc(percent))
-ftab = flextable(tab) %>%
-  fontsize(part = 'all', size = 8) %>%
-  autofit() 
-ftab
-```
-
-<!--- Almost all the women in private hospitals have missing OGTT data. We could possibly exclude these women from the analysis? --->
-
-# Examples with missing GDM and early GDM diagnosis
+# Examples that have and ICD code diagnosis of GDM but with no blood results
 
 ### Selected variable from mother data
 
 ```{r}
-to_table = left_join(sample_NA, mother_data, by = c('mother_id')) %>%
+to_table = left_join(sample_icd_positive, mother_data, by = c('mother_id')) %>%
   select(mother_id, facility_name, est_confinment_date, body_mass_index, pregnancy_complicatns_flag, gdm_diagnosis) %>%
   arrange(mother_id)
 tab = flextable(to_table) %>%
@@ -81,7 +68,7 @@ tab
 ### Glucose data
 
 ```{r}
-to_table = left_join(sample_NA, mother_glu, by = c('mother_id')) %>%
+to_table = left_join(sample_icd_positive, mother_glu, by = c('mother_id')) %>%
   select(-source) %>%
   arrange(mother_id, collected)
 tab = flextable(to_table) %>%
@@ -92,11 +79,24 @@ tab = flextable(to_table) %>%
 tab
 ```
 
+# Examples that have and **no** ICD code diagnosis of GDM with no blood results
 
-### a1c data
+### Selected variable from mother data
 
 ```{r}
-to_table = left_join(sample_NA, mother_a1c, by = c('mother_id')) %>%
+to_table = left_join(sample_icd_negative, mother_data, by = c('mother_id')) %>%
+  select(mother_id, facility_name, est_confinment_date, body_mass_index, pregnancy_complicatns_flag, gdm_diagnosis) %>%
+  arrange(mother_id)
+tab = flextable(to_table) %>%
+  fontsize(part = 'all', size = 8) %>%
+  autofit()
+tab
+```
+
+### Glucose data
+
+```{r}
+to_table = left_join(sample_icd_negative, mother_glu, by = c('mother_id')) %>%
   select(-source) %>%
   arrange(mother_id, collected)
 tab = flextable(to_table) %>%
@@ -220,3 +220,24 @@ tab = flextable(to_table) %>%
 tab
 ```
 
+
+# Missing data for GDM diagnosis
+
+First we look at missing GDM diagnosis (using my derivation) by facility. The cells show the missing numbers and within-facility percentage of missing. The rows are arranged by the percent missing.
+
+```{r}
+tab = mutate(diagnosis_2019, missing = is.na(gdm) & is.na(early_gdm),
+             missing = ifelse(missing==TRUE, 'Missing','Not missing')) %>%
+  group_by(facility_name, missing) %>%
+  tally() %>%
+  group_by(facility_name) %>%
+  mutate(percent = round(prop.table(n)*100)) %>%
+  filter(missing == 'Missing') %>%
+  arrange(desc(percent))
+ftab = flextable(tab) %>%
+  fontsize(part = 'all', size = 8) %>%
+  autofit() 
+ftab
+```
+
+<!--- Almost all the women in private hospitals have missing OGTT data. We could possibly exclude these women from the analysis? --->

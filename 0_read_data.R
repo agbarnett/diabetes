@@ -1,6 +1,6 @@
 # 0_read_data.R
 # read the GDM data; impute missing confinement date to estimate gestation time for glucose and a1c tests
-# May 2022
+# July 2022
 library(dplyr)
 options(dplyr.summarise.inform = FALSE)
 library(janitor)
@@ -55,9 +55,9 @@ for (i in seq_along(ddir)){
 names(raw_data) = names
 list2env(raw_data, globalenv())
 
-## can combine mother_glu and mother_glu_upd
-mother_glu = bind_rows(mother_glu, mother_glu_upd) %>%
-  unique() # remove small number of duplicates
+## rename mother_glu_upd to mother_glu "The glu_update is the same data source just with the addition of the fasting added"
+remove(mother_glu)
+mother_glu = mother_glu_upd
 
 ## remove three mothers with missing id numbers
 mother_data = filter(mother_data, !is.na(mother_id))
@@ -81,7 +81,10 @@ mother_glu = mutate(mother_glu,
                     gload = ifelse(gload ==0 | gload > 500, NA, gload)) %>% # remove a few errors 
   select(-glu50, -rsug, -glufl, -gluru, # missing for all rows, glufl and gluru almost completely missing
          -gttbdt, -gttptp) %>% # not using comments
-  unique() # remove a small number of duplicates
+  unique() %>% # remove a small number of duplicates
+  mutate(glufasting = ifelse(statg =='Fasting', glu, glufasting), # move fasting results over
+         glu = ifelse(statg !='Fasting', NA, glu)) # erase glu that are not glufasting
+
 # remove exclusions (serious disease) for glucose (also used for A1C)
 to_exclude = c('ALL','AML-M3','BMT','CF','Chemotherapy','Warfarin Tx')
 mother_glu = filter(mother_glu,
@@ -201,7 +204,7 @@ for (k in 1:n_imp){ # loop through imputations
            gestation_est >= 0,
            gestation_est < 13) # this test must be before 13 weeks
   # now find any high test per woman
-  any_high_a1c = group_by(this_a1c, mother_id, preg_seq_id, est_confinment_date ) %>%
+  any_high_a1c = group_by(this_a1c, mother_id, preg_seq_id ) %>%
     summarise(a1c = max(a1c, na.rm=TRUE)) %>%
     ungroup() %>%
     mutate_all(function(x) ifelse(is.nan(x) | is.infinite(x), NA, x)) # remove Inf

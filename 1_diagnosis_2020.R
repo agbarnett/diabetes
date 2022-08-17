@@ -2,7 +2,8 @@
 # create the different diagnosis paths for gestational diabetes
 # for 2020 data
 # currently just using 1 imputed data set
-# May 2022
+# "OGTT which is made up of three results: Fasting (before the glucose load is given) 1 hour (glu1) and 2 hour (glu2) "
+# July 2022
 library(dplyr)
 
 # from 0_read_data.R
@@ -14,18 +15,20 @@ diagnosis_2020 = left_join(left_join(left_join(mother_data, mother_glu_imputed[[
                        mother_fasting_imputed[[1]], by = c('mother_id','preg_seq_id')),
                        mother_a1c_imputed[[1]], by = c('mother_id','preg_seq_id')) %>%
   mutate(
-    gdm = case_when(
-      gdm_diagnosis == FALSE & glu < 4.7 & is.na(glufasting) & is.na(glu1) & is.na(glu2) ~ 'No diagnosis based on fasting blood glucose only',
+    gdm = case_when( # assessed in order
+      gdm_diagnosis == FALSE & glufasting < 4.7 & is.na(glu1) & is.na(glu2) ~ 'No diagnosis based on fasting blood glucose only',
       gdm_diagnosis == FALSE & (glu >= 4.7 & glu <=5.0) & (glufasting <=5.0 & glu1 <= 9.9 & glu2 <=8.4) ~ 'No diagnosis based on unequivocal fasting but negative OGTT',
       gdm_diagnosis == FALSE & is.na(glu) & (glufasting <=5.0 & glu1 <= 9.9 & glu2 <=8.4) ~ 'No diagnosis based on OGTT only',
-      gdm_diagnosis == FALSE & is.na(glu) & is.na(a1c) & is.na(glufasting) & is.na(glu1) & is.na(glu2) ~ 'Missing',
-      gdm_diagnosis == TRUE & glu > 5.0 & is.na(glufasting) & is.na(glu1) & is.na(glu2) ~ 'GDM diagnosis based on fasting blood glucose only',
+      gdm_diagnosis == FALSE & is.na(glu) & is.na(a1c) & is.na(glufasting) & is.na(glu1) & is.na(glu2) ~ 'No GDM diagnosis and no blood tests',
+      gdm_diagnosis == TRUE & glu > 5.0 & is.na(glu1) & is.na(glu2) ~ 'GDM diagnosis based on fasting blood glucose only', # put before next one
+      gdm_diagnosis == TRUE & glufasting >5.0 & is.na(glu1) & is.na(glu2) ~ 'GDM diagnosis based on fasting blood glucose only', #  okay for second two to be missing as women may not tolerate second part of test
+      gdm_diagnosis == TRUE & (glufasting >5.0 | glu1 > 9.9 | glu2 > 8.4) ~ 'GDM diagnosis made on positive OGTT at any stage', # 
       gdm_diagnosis == TRUE & (glu >= 4.7 & glu <=5.0) & (glufasting >5.0 | glu1 > 9.9 | glu2 > 8.4) ~ 'GDM diagnosis based on unequivocal fasting but positive OGTT',
-      gdm_diagnosis == TRUE & is.na(glu) & is.na(a1c) & ((is.na(glufasting) & is.na(glu1) & is.na(glu2)) | (glufasting <=5.0 & glu1 <= 9.9 & glu2 <=8.4)) ~ 'GDM diagnosis method unknown',
-      gdm_diagnosis == TRUE & glu > 5.0 ~ 'GDM diagnosis made on positive OGTT at any stage',
-      gdm_diagnosis == TRUE & a1c >5.9 & is.na(glufasting) & is.na(glu1) & is.na(glu2)  ~ 'GDM diagnosis made by HbA1c only'
+      gdm_diagnosis == TRUE & a1c >5.9 & is.na(glufasting) & is.na(glu1) & is.na(glu2)  ~ 'GDM diagnosis made by HbA1c only',
+      gdm_diagnosis == TRUE & is.na(glu) & is.na(a1c) & ((is.na(glufasting) & is.na(glu1) & is.na(glu2)) | (glufasting <=5.0 & glu1 <= 9.9 & glu2 <=8.4)) ~ 'GDM diagnosis method unknown'
     ),
-    gdm = ifelse(is.na(gdm), 'No result', gdm) # change missing
+    gdm = ifelse(is.na(gdm) & gdm_diagnosis == TRUE, 'GDM diagnosis method unknown', gdm), # change missing - used to be 'GDM diagnosis with no glucose data'
+    gdm = ifelse(is.na(gdm) & gdm_diagnosis == FALSE, 'No GDM diagnosis and no blood tests', gdm) # change missing - used to be `No GDM diagnosis with no glucose data`
   )
 table(diagnosis_2020$gdm) # quick check
 
